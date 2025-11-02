@@ -1,0 +1,14 @@
+
+version: v1
+keyword_rules:
+  - code: KW-BOND-01
+    severity: HIGH
+    message: "특약에 보증금 '반환' 및 '기한' 관련 문구 부재 가능성"
+    must_include_all: ["보증금", "반환", "기한"]
+  - code: KW-INTEREST-01
+    severity: MED
+    message: "지연이자 또는 손해배상 기준이 모호할 수 있음"
+    must_include_all: ["지연", "이자"]
+numeric_rules:
+  - code: NR-001
+    min_period: 6

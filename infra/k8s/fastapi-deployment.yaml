@@ -1,0 +1,36 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rentai-backend }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: rentai-backend } }
+  template:
+    metadata: { labels: { app: rentai-backend } }
+    spec:
+      containers:
+        - name: backend
+          image: rentai-backend:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: GEMINI_MODEL
+              value: "gemini-2.5-flash-lite"
+            - name: VECTOR_DIR
+              value: "/data/vectorstore"
+          volumeMounts:
+            - name: vectordb
+              mountPath: /data/vectorstore
+      volumes:
+        - name: vectordb
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata: { name: rentai-backend }
+spec:
+  selector: { app: rentai-backend }
+  ports:
+    - port: 8000
+      targetPort: 8000

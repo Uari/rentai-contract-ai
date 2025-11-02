@@ -1,0 +1,24 @@
+# Web API
+fastapi==0.115.6
+uvicorn[standard]==0.32.0
+python-multipart==0.0.17
+requests==2.32.3
+python-dotenv==1.0.1
+
+# LangChain + Gemini (0.3.x 세대 통일)
+langchain==0.3.27
+langchain-core==0.3.79
+langchain-community==0.3.24
+langchain-google-genai==2.0.10
+google-generativeai==0.8.5
+pydantic>=2,<3
+
+# Vector / Embeddings
+chromadb==0.5.13
+sentence-transformers==3.2.1
+
+# PDF / OCR
+PyMuPDF==1.24.10
+pdfplumber==0.11.4
+pytesseract==0.3.13
+Pillow==10.4.0
