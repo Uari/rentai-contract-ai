@@ -1,3 +1,7 @@
+# ⚠️ 레거시 프론트엔드 - frontend/app.py가 메인
+# 이 파일은 frontend/app.py와 중복 기능
+# TODO: 삭제하거나 frontend/app.py로 통합
+
 # app_streamlit.py
 import io
 import json
@@ -133,3 +137,34 @@ if "result" in st.session_state:
     st.markdown("### 미리보기 문장 (상위 5개)")
     for s in (data.get("preview_sentences") or []):
         st.write(f"- [{s.get('id')}] (p{s.get('page')}): {s.get('text')}")
+
+    st.markdown("### PDF 리포트")
+    # --- PDF 리포트 (폼 + 세션 활용) ---
+    if "result" in st.session_state:
+        st.divider()
+        st.markdown("### PDF 리포트")
+
+        if "pdf_bytes" not in st.session_state:
+            st.session_state["pdf_bytes"] = None
+
+        with st.form("pdf_form"):
+            st.caption("업로드한 원본 PDF를 FastAPI에 다시 보내 리포트를 생성합니다.")
+            gen = st.form_submit_button("리포트 생성")
+            if gen and uploaded:
+                files = {"file": (uploaded.name, uploaded.getvalue(), "application/pdf")}
+                with st.spinner("리포트 생성 중..."):
+                    r = requests.post(f"{api_base}/report/pdf", files=files, timeout=180)
+                if r.ok:
+                    st.session_state["pdf_bytes"] = r.content
+                    st.success("리포트 생성 완료. 아래에서 다운로드하세요.")
+                else:
+                    st.error(f"리포트 생성 실패: {r.status_code}\n{r.text}")
+
+        # ⬇️ 폼 밖에서 다운로드 버튼 렌더링
+        if st.session_state.get("pdf_bytes"):
+            st.download_button(
+                "다운로드: analysis_report.pdf",
+                data=st.session_state["pdf_bytes"],
+                file_name="analysis_report.pdf",
+                mime="application/pdf",
+            )

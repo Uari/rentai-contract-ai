@@ -1,3 +1,5 @@
+# ⚠️ 레거시 룰 체커 - analyze_pipeline.py에서만 사용 (현재 미사용)
+# 메인 룰 엔진은 rule_engine.py 사용
 
 from typing import List, Dict, Any
 from app.models.contract_schema import LeaseDoc
