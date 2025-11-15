@@ -33,6 +33,18 @@ except Exception:
     RULE_HINTS = {}
 
 _SEVERITY_WEIGHT = {"HIGH": 20, "MED": 15, "LOW": 10}
+_LEVEL_PRIORITY = {"safe": 0, "warning": 1, "critical": 2}
+
+def _severity_to_level(rule: Dict[str, Any]) -> str:
+    level = (rule.get("level") or "").strip().lower()
+    if level in ("critical", "warning", "safe"):
+        return level
+    severity = str(rule.get("severity") or "").upper()
+    if severity == "HIGH":
+        return "critical"
+    if severity in ("MED", "LOW"):
+        return "warning"
+    return "safe"
 
 def _norm(s: Any) -> str:
     return re.sub(r"\s+", " ", ("" if s is None else str(s))).strip()
@@ -41,11 +53,28 @@ def _norm_lc(s: Any) -> str:
     return _norm(s).lower()
 
 def _get_nested(d: Dict[str, Any], path: str) -> Any:
+    """
+    중첩된 딕셔너리에서 값 추출
+    - "value" 키가 있으면 자동으로 건너뜀
+    - 예: rent.deposit → rent["value"]["deposit"] 자동 처리
+    """
     cur: Any = d
     for key in path.split("."):
-        if not isinstance(cur, dict) or key not in cur:
+        if not isinstance(cur, dict):
             return None
+        
+        # 키가 직접 없으면 "value" 키를 통해 접근 시도
+        if key not in cur:
+            # "value" 키가 있고, 그 안에 원하는 키가 있으면 사용
+            if "value" in cur and isinstance(cur["value"], dict):
+                cur = cur["value"]
+                if key not in cur:
+                    return None
+            else:
+                return None
+        
         cur = cur[key]
+    
     return cur
 
 def _is_empty(v: Any) -> bool:
@@ -77,6 +106,36 @@ def _match(rule: Dict[str, Any], extracted: Dict[str, Any], full_text: str, extr
     w: Dict[str, Any] = rule.get("when", {}) or {}
     op = (w.get("op") or "").strip()
     reasons: List[str] = []
+
+    def _resolve_field_value(path: Optional[str]) -> Any:
+        if not path:
+            return None
+        val = _get_nested(extras, path)
+        if val is None:
+            val = _get_nested(extracted, path)
+        return val
+
+    only_field = w.get("only_if_field")
+    if only_field:
+        only_val = _resolve_field_value(only_field)
+        only_target = w.get("only_if_value")
+        if only_target is None:
+            if _is_empty(only_val):
+                return []
+        else:
+            if _norm_lc(only_val) != _norm_lc(only_target):
+                return []
+
+    unless_field = w.get("unless_field")
+    if unless_field:
+        unless_val = _resolve_field_value(unless_field)
+        unless_target = w.get("unless_value")
+        if unless_target is None:
+            if not _is_empty(unless_val):
+                return []
+        else:
+            if _norm_lc(unless_val) == _norm_lc(unless_target):
+                return []
 
     # 1) field 기반 연산
     field_path = w.get("field")
@@ -129,12 +188,14 @@ def evaluate_rules(
 
     issues: List[Dict[str, Any]] = []
     total = 0
+    overall_level = "safe"
 
     for r in rules:
         code = str(r.get("code") or "")
         message = r.get("message") or code or "규칙"
         severity = str(r.get("severity") or "MED").upper()
         weight = int(_SEVERITY_WEIGHT.get(severity, 10))
+        level = _severity_to_level(r)
 
         reasons = _match(r, extracted, full_text, extras)
         if not reasons:
@@ -146,10 +207,13 @@ def evaluate_rules(
             "severity": severity,
             "weight": weight,
             "score": weight,
+             "level": level,
             "reasons": reasons,
             "references": _attach_refs(code, message, k=3),
         }
         issues.append(issue)
         total += weight
+        if _LEVEL_PRIORITY.get(level, 0) > _LEVEL_PRIORITY.get(overall_level, 0):
+            overall_level = level
 
-    return {"total_score": total, "issues": issues}
+    return {"total_score": total, "issues": issues, "level": overall_level}

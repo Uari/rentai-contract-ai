@@ -11,21 +11,17 @@ rules:
   - { code: RULE-007, severity: HIGH, message: "과도한 위약(잔여월세 전액)",               when: { field: termination_penalty, op: contains, value: "잔여월세 전액" } }
   - { code: RULE-008, severity: MED,  message: "위약 관련 조항 없음",                     when: { field: termination_penalty, op: none } }
   - { code: RULE-009, severity: LOW,  message: "서명/날인 키워드 없음",                    when: { field: signature_detected, op: eq, value: false } }
-  - { code: RULE-010, severity: LOW,  message: "표 미검출(금액/기간 표기 확인)",           when: { field: tables_found, op: eq, value: 0 } }
 
   # 금액/기간/주소
   - { code: RULE-011, severity: HIGH, message: "보증금 미기재",                            when: { field: rent.deposit, op: none } }
-  - { code: RULE-012, severity: HIGH, message: "월세(차임) 미기재",                        when: { field: rent.monthly_rent, op: none } }
+  - { code: RULE-012, severity: HIGH, message: "월세(차임) 미기재",                        when: { field: rent.monthly_rent, op: none, unless_field: contract_type.value, unless_value: jeonse } }
   - { code: RULE-013, severity: MED,  message: "계약기간(시작/종료) 미기재",               when: { field: period.start, op: none } }
   - { code: RULE-014, severity: MED,  message: "계약기간 종료일 미기재",                   when: { field: period.end, op: none } }
   - { code: RULE-015, severity: LOW,  message: "소재지/주소 미기재",                       when: { field: address, op: none } }
 
   # 텍스트 키워드 기반(부재 시 경고)
-  - { code: RULE-016, severity: MED,  message: "지연이자율 미기재",                        when: { text_kw: ["지연이자", "지연 이자"], op: missing_kw } }
-  - { code: RULE-017, severity: MED,  message: "관리비 정산 방식 불명확",                  when: { text_kw: ["정산", "정산방법", "정산 방식"], op: missing_kw } }
   - { code: RULE-018, severity: MED,  message: "수선/하자 책임 불명확",                     when: { text_kw: ["수선의무", "하자보수"], op: missing_kw } }
-  - { code: RULE-019, severity: MED,  message: "원상복구 기준 불명확",                     when: { text_kw: ["원상복구", "원상 회복"], op: missing_kw } }
+  - { code: RULE-019, severity: MED,  message: "원상복구 기준 불명확",                     when: { text_kw: ["원상복구", "원상회복"], op: missing_kw } }
   - { code: RULE-020, severity: MED,  message: "중도해지 절차/통지 불명확",                 when: { text_kw: ["중도해지", "해지 통지"], op: missing_kw } }
   - { code: RULE-021, severity: LOW,  message: "임대차보증보험 안내 없음",                  when: { text_kw: ["임대차보증보험", "보증보험"], op: missing_kw } }
   - { code: RULE-022, severity: LOW,  message: "전대/양도 제한 규정 없음",                  when: { text_kw: ["전대", "재임대", "양도"], op: missing_kw } }
-  - { code: RULE-025, severity: LOW,  message: "분쟁 해결 절차 없음",                       when: { text_kw: ["분쟁", "조정", "중재", "관할법원"], op: missing_kw } }

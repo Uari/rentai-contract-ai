@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-PDF 리포트 생성기 (ReportLab)
-- 한글 폰트 자동 등록(가능한 경우) + 스타일(KoH1/KoH2/KoBody/KoStrong)
-- 룰 이슈 포맷 정규화(_normalize_issue): id/title 또는 code/message 모두 지원
-- context(dict) 입력 -> PDF bytes 반환(generate_pdf_bytes)
+PDF 리포트 생성기 (ReportLab) - 사용자 친화 버전
+- 깔끔하고 직관적인 레이아웃
+- 색상 코딩으로 위험도 시각화
+- 핵심 정보 우선 배치
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -28,24 +28,18 @@ from reportlab.platypus import (
     Table,
     TableStyle,
     PageBreak,
+    KeepTogether,
 )
 
 # --------------------------------------------------------------------------------------
 # 폰트 / 스타일
 # --------------------------------------------------------------------------------------
 
-
 def _register_korean_font_if_available() -> str:
-    """
-    rentai/report/fonts/ 내 대표 한글 폰트 탐색 후 등록.
-    우선순위: NanumGothic -> NotoSansKR -> NotoSansCJKkr -> MalgunGothic (Windows) -> Helvetica(영문)
-    반환: 등록된 폰트명(ParagraphStyle에서 fontName으로 사용)
-    """
-    # 탐색 경로: 현재 파일 기준 ../report/fonts
+    """한글 폰트 등록"""
     here = pathlib.Path(__file__).resolve()
     fonts_dir = here.parent / "fonts"
 
-    # 후보 목록 (파일명, 내부폰트명 동일하게 등록)
     candidates = [
         ("NanumGothic.ttf", "NanumGothic"),
         ("NotoSansKR-Regular.ttf", "NotoSansKR"),
@@ -61,14 +55,12 @@ def _register_korean_font_if_available() -> str:
             except Exception:
                 pass
 
-    # Windows 기본 'Malgun Gothic' 시도 (미설치 환경에서는 실패 가능)
     try:
         pdfmetrics.registerFont(TTFont("MalgunGothic", "malgun.ttf"))
         return "MalgunGothic"
     except Exception:
         pass
 
-    # 최종 fallback: Helvetica (한글 완전 호환 X, 그래도 에러 없이 동작)
     return "Helvetica"
 
 
@@ -77,305 +69,448 @@ def _build_styles() -> dict:
     font_name = _register_korean_font_if_available()
 
     styles = {
-        "KoH1": ParagraphStyle(
-            name="KoH1",
-            parent=base["Heading1"],
-            alignment=TA_LEFT,
+        "Title": ParagraphStyle(
+            name="Title",
             fontName=font_name,
-            fontSize=16,
-            leading=22,
-            spaceAfter=8,
+            fontSize=20,
+            leading=26,
+            textColor=colors.HexColor("#1a1a1a"),
+            spaceAfter=4,
         ),
-        "KoH2": ParagraphStyle(
-            name="KoH2",
-            parent=base["Heading2"],
-            alignment=TA_LEFT,
+        "Subtitle": ParagraphStyle(
+            name="Subtitle",
             fontName=font_name,
-            fontSize=13,
+            fontSize=11,
+            textColor=colors.HexColor("#666666"),
+            spaceAfter=16,
+        ),
+        "SectionTitle": ParagraphStyle(
+            name="SectionTitle",
+            fontName=font_name,
+            fontSize=14,
             leading=18,
-            spaceAfter=6,
+            textColor=colors.HexColor("#2c3e50"),
+            spaceBefore=10,
+            spaceAfter=8,
+            leftIndent=0,
         ),
-        "KoBody": ParagraphStyle(
-            name="KoBody",
-            parent=base["BodyText"],
-            alignment=TA_LEFT,
+        "Body": ParagraphStyle(
+            name="Body",
             fontName=font_name,
-            fontSize=10.5,
-            leading=15,
+            fontSize=10,
+            leading=14,
+            textColor=colors.HexColor("#333333"),
             spaceAfter=4,
         ),
-        "KoStrong": ParagraphStyle(
-            name="KoStrong",
-            parent=base["BodyText"],
-            alignment=TA_LEFT,
+        "BodyBold": ParagraphStyle(
+            name="BodyBold",
             fontName=font_name,
-            fontSize=10.5,
-            leading=15,
+            fontSize=10,
+            leading=14,
+            textColor=colors.HexColor("#1a1a1a"),
             spaceAfter=4,
-            textColor=colors.HexColor("#222222"),
         ),
-        "KoSmall": ParagraphStyle(
-            name="KoSmall",
-            parent=base["BodyText"],
-            alignment=TA_LEFT,
+        "Small": ParagraphStyle(
+            name="Small",
             fontName=font_name,
             fontSize=9,
             leading=12,
+            textColor=colors.HexColor("#666666"),
             spaceAfter=2,
-            textColor=colors.HexColor("#555555"),
         ),
-        "KoMonoSmall": ParagraphStyle(
-            name="KoMonoSmall",
-            parent=base["Code"],
-            alignment=TA_LEFT,
-            fontName=font_name,   # 모노 폰트가 없을 수 있으므로 동일 폰트 지정
-            fontSize=8.5,
-            leading=12,
-            spaceAfter=2,
-            textColor=colors.HexColor("#333333"),
+        "BigNumber": ParagraphStyle(
+            name="BigNumber",
+            fontName=font_name,
+            fontSize=16,
+            leading=20,
+            textColor=colors.HexColor("#2c3e50"),
+            alignment=TA_CENTER,
         ),
     }
     return styles
 
+
 # --------------------------------------------------------------------------------------
-# 데이터 정규화 / 유틸
+# 유틸리티
 # --------------------------------------------------------------------------------------
 
-def _normalize_issue(raw: dict) -> dict:
-    """
-    룰엔진/버전에 따라 다른 키 이름을 단일 포맷으로 정규화.
-    반환 키: code, message, severity, weight, score, reasons, references
-    """
-    code = raw.get("id") or raw.get("code") or ""
-    message = raw.get("title") or raw.get("message") or code or "이슈"
-    severity = (raw.get("severity") or "MED").upper()
-    # score/weight: 일부 버전은 weight만 제공하거나 score를 제공
-    weight = int(raw.get("weight") or 0)
-    score = int(raw.get("score") or weight or 0)
+def _get_risk_color(severity: str) -> colors.Color:
+    """위험도별 색상"""
+    severity = (severity or "MED").upper()
+    if severity in ["HIGH", "CRITICAL"]:
+        return colors.HexColor("#e74c3c")  # 빨강
+    elif severity == "MED":
+        return colors.HexColor("#f39c12")  # 주황
+    else:  # LOW
+        return colors.HexColor("#27ae60")  # 초록
 
-    # 사유/레퍼런스는 배열 기대
-    reasons = raw.get("reasons") or []
-    references = raw.get("references") or []
 
-    # 안전장치: 타입 보정
-    if not isinstance(reasons, list):
-        reasons = [str(reasons)]
-    if not isinstance(references, list):
-        references = []
+def _format_number(num: Any) -> str:
+    """숫자 포맷팅"""
+    if num is None or num == "":
+        return "미기재"
+    
+    # dict인 경우 value 가져오기
+    if isinstance(num, dict):
+        num = num.get("value") or num.get("deposit") or num.get("monthly_rent")
+    
+    if num is None or num == "":
+        return "미기재"
+    
+    try:
+        if isinstance(num, str):
+            num = int(num.replace(",", ""))
+        return f"{int(num):,}원"
+    except:
+        return str(num)
 
-    # 각 reference 항목 정규화
-    norm_refs = []
-    for ref in references:
-        if isinstance(ref, dict):
-            txt = ref.get("text") or ref.get("chunk") or ""
-            src = ref.get("source") or ref.get("path") or ""
-            sc = ref.get("score")
-            norm_refs.append({"text": txt, "source": src, "score": sc})
-        else:
-            norm_refs.append({"text": str(ref), "source": "", "score": None})
 
-    return {
-        "code": code,
-        "message": message,
-        "severity": severity,
-        "weight": weight,
-        "score": score,
-        "reasons": reasons,
-        "references": norm_refs,
+def _format_date(date_str: Any) -> str:
+    """날짜 포맷팅"""
+    if date_str is None or date_str == "":
+        return "미기재"
+    
+    # dict인 경우 value 가져오기
+    if isinstance(date_str, dict):
+        date_str = date_str.get("value") or date_str.get("start") or date_str.get("end")
+    
+    if date_str is None or date_str == "":
+        return "미기재"
+    
+    return str(date_str)
+
+
+def _format_contract_type(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("value")
+    if not value:
+        return "미기재"
+    mapping = {
+        "jeonse": "전세",
+        "wolse": "월세(차임)",
     }
+    return mapping.get(str(value).lower(), str(value))
 
 
-def _kv_table(data, KO_FONT_NAME: str) -> Table:
-    table = Table(data, colWidths=[35*mm, 130*mm])
+def _create_summary_box(title: str, value: str, color: colors.Color, font_name: str) -> Table:
+    """요약 박스 생성"""
+    data = [
+        [Paragraph(title, ParagraphStyle(
+            name="BoxTitle",
+            fontName=font_name,
+            fontSize=9,
+            textColor=colors.HexColor("#666666"),
+            alignment=TA_CENTER,
+        ))],
+        [Paragraph(value, ParagraphStyle(
+            name="BoxValue",
+            fontName=font_name,
+            fontSize=14,
+            leading=18,
+            textColor=color,
+            alignment=TA_CENTER,
+        ))],
+    ]
+    
+    table = Table(data, colWidths=[45*mm])
     table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), KO_FONT_NAME),   # ← 한글폰트 적용
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.whitesmoke, colors.white]),
-        ("BOX", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("BOX", (0, 0), (-1, -1), 1, color),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8f9fa")),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
     ]))
     return table
 
 
-def _format_bool(b: Any) -> str:
-    if isinstance(b, bool):
-        return "예" if b else "아니오"
-    return str(b)
+def _create_info_table(data: List[List[str]], font_name: str) -> Table:
+    """정보 테이블 생성"""
+    table = Table(data, colWidths=[50*mm, 110*mm])
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (0, 0), (0, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#666666")),
+        ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#1a1a1a")),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, colors.HexColor("#e0e0e0")),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return table
+
 
 # --------------------------------------------------------------------------------------
-# 메인 엔트리
+# 메인 생성 함수
 # --------------------------------------------------------------------------------------
 
 def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
     """
-    context 예시:
-    {
-        "file": "sample.pdf",
-        "page_count": 3,
-        "sentence_count": 120,
-        "tables_found": 1,
-        "signature_detected": true,
-        "extracted_fields": {...},
-        "preview_sentences": [...],
-        "risk": {
-            "total_score": 7,
-            "issues": [
-                {
-                    "id": "RULE-001", "title": "보증금 반환 기한 없음",
-                    "severity": "HIGH", "score": 5,
-                    "reasons": ["확정일자 필드 누락"],
-                    "references": [{"text":"...","source":"임대차보호법 §3-2","score":0.23}]
-                }
-            ]
-        }
-    }
+    깔끔하고 사용자 친화적인 리포트 생성
     """
     styles = _build_styles()
     buffer = io.BytesIO()
 
-    # 문서 설정
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        leftMargin=18*mm,
-        rightMargin=18*mm,
-        topMargin=14*mm,
-        bottomMargin=14*mm,
+        leftMargin=20*mm,
+        rightMargin=20*mm,
+        topMargin=15*mm,
+        bottomMargin=15*mm,
         title="임대차 계약서 분석 리포트",
         author="RentAI",
     )
 
     story: List[Any] = []
+    font_name = styles["Body"].fontName
 
-    # ----------------------------------------------------------------------------------
-    # 타이틀 & 메타
-    # ----------------------------------------------------------------------------------
-    story.append(Paragraph("임대차 계약서 분석 리포트", styles["KoH1"]))
-    meta_line = f"생성일: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    story.append(Paragraph(meta_line, styles["KoSmall"]))
-    story.append(Spacer(1, 6))
+    # ==================================================================================
+    # 헤더
+    # ==================================================================================
+    story.append(Paragraph("🏠 임대차 계약서 분석 리포트", styles["Title"]))
+    story.append(Paragraph(
+        f"생성일시: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M')}",
+        styles["Subtitle"]
+    ))
+    story.append(Spacer(1, 5*mm))
 
-    KO_FONT_NAME = styles["KoBody"].fontName  # 예: "NotoSansKR" 또는 등록한 이름
-    # 개요 테이블
-    file_name = context.get("file") or "N/A"
-    page_count = context.get("page_count", 0)
-    sentence_count = context.get("sentence_count", 0)
-    tables_found = context.get("tables_found", 0)
-    signature_detected = context.get("signature_detected", False)
-
-    overview = [
-        ["파일명", file_name],
-        ["페이지 수", str(page_count)],
-        ["문장 수", str(sentence_count)],
-        ["표 검출 수", str(tables_found)],
-        ["서명/날인 키워드", _format_bool(signature_detected)],
-    ]
-    story.append(_kv_table(overview, KO_FONT_NAME))
-    story.append(Spacer(1, 10))
-
-    # ----------------------------------------------------------------------------------
-    # 추출 필드 요약
-    # ----------------------------------------------------------------------------------
-    extracted = context.get("extracted_fields") or {}
-    story.append(Paragraph("핵심 필드 요약", styles["KoH2"]))
-    fields_rows: List[List[str]] = []
-
-    # 필드 예시: 보증금/월세/기간/주소/확정일자/전입신고/관리비 등
-    rent = extracted.get("rent") or {}
-    period = extracted.get("period") or {}
-    maintenance = extracted.get("maintenance_fee") or extracted.get("maintenance") or {}
-
-    fields_rows.extend([
-        ["보증금", str(rent.get("deposit") or "")],
-        ["월세(차임)", str(rent.get("monthly_rent") or "")],
-        ["계약기간(시작)", str(period.get("start") or "")],
-        ["계약기간(종료)", str(period.get("end") or "")],
-        ["소재지/주소", str(extracted.get("address") or "")],
-        ["확정일자", str(extracted.get("confirmation_date") or "")],
-        ["전입신고 여부", _format_bool(extracted.get("resident_reported"))],
-        ["관리비(포함여부)", _format_bool(maintenance.get("included"))],
-        ["관리비(금액)", str(maintenance.get("amount") or "")],
-        ["원상복구 조항", str(extracted.get("restoration_clause") or "")],
-        ["위약 조항", str(extracted.get("termination_penalty") or "")],
-    ])
-
-    story.append(_kv_table(fields_rows, KO_FONT_NAME))
-    story.append(Spacer(1, 10))
-
-    # ----------------------------------------------------------------------------------
-    # 위험도 요약
-    # ----------------------------------------------------------------------------------
+    # ==================================================================================
+    # 위험도 요약 (큰 박스로 강조)
+    # ==================================================================================
     risk = context.get("risk") or {}
-    total_score = risk.get("total_score", 0)
-    issues_raw = risk.get("issues") or []
+    issues = risk.get("issues") or []
+    risk_level_key = str(risk.get("level") or "safe").lower()
+    level_styles = {
+        "critical": ("위험", "🚨", colors.HexColor("#e74c3c")),
+        "warning": ("주의", "⚠️", colors.HexColor("#f39c12")),
+        "safe": ("양호", "✅", colors.HexColor("#27ae60")),
+    }
+    risk_label, risk_emoji, risk_color = level_styles.get(
+        risk_level_key, level_styles["safe"]
+    )
 
-    story.append(Paragraph("위험도 요약", styles["KoH2"]))
-    story.append(Paragraph(f"총 위험 점수: {total_score}", styles["KoBody"]))
-    story.append(Paragraph(f"이슈 개수: {len(issues_raw)}", styles["KoBody"]))
-    story.append(Spacer(1, 6))
+    risk_box_data = [
+        [Paragraph(f"{risk_emoji} 종합 위험도", ParagraphStyle(
+            name="RiskTitle",
+            fontName=font_name,
+            fontSize=14,
+            textColor=colors.white,
+            alignment=TA_CENTER,
+        ))],
+        [Paragraph(risk_label, ParagraphStyle(
+            name="RiskValue",
+            fontName=font_name,
+            fontSize=20,
+            leading=26,
+            textColor=colors.white,
+            alignment=TA_CENTER,
+        ))],
+        [Paragraph(f"감지된 이슈: {len(issues)}건", ParagraphStyle(
+            name="RiskSub",
+            fontName=font_name,
+            fontSize=11,
+            textColor=colors.white,
+            alignment=TA_CENTER,
+        ))],
+    ]
+    
+    risk_table = Table(risk_box_data, colWidths=[170*mm])
+    risk_table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (0, 0), (-1, -1), risk_color),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story.append(risk_table)
+    story.append(Spacer(1, 5*mm))
 
-    # ----------------------------------------------------------------------------------
-    # 이슈 상세
-    # ----------------------------------------------------------------------------------
-    if issues_raw:
-        story.append(Paragraph("이슈 상세", styles["KoH2"]))
-        for raw in issues_raw:
-            issue = _normalize_issue(raw)
-
-            title = f"{issue['code']} — {issue['message']}" if issue["code"] else issue["message"]
-            story.append(Paragraph(title, styles["KoH2"]))
-
-            meta = f"중요도: {issue['severity']} | 점수: {issue['score']}"
-            story.append(Paragraph(meta, styles["KoSmall"]))
-
-            if issue["reasons"]:
-                story.append(Paragraph("사유:", styles["KoStrong"]))
-                for r in issue["reasons"]:
-                    story.append(Paragraph(f"• {r}", styles["KoBody"]))
-
-            if issue["references"]:
-                story.append(Paragraph("법적 근거 (RAG):", styles["KoStrong"]))
-                for ref in issue["references"]:
-                    txt = ref.get("text") or ""
-                    src = ref.get("source") or ""
-                    sc = ref.get("score")
-                    line = f"• {txt}"
-                    if src:
-                        line += f" (출처: {src}"
-                        if sc is not None:
-                            line += f", score={sc}"
-                        line += ")"
-                    story.append(Paragraph(line, styles["KoBody"]))
-
-            story.append(Spacer(1, 8))
+    # ==================================================================================
+    # 주요 이슈 (TOP 3) + 상세 분석
+    # ==================================================================================
+    if issues:
+        story.append(Paragraph("📌 주요 발견사항 (TOP 3)", styles["SectionTitle"]))
+        
+        top_issues = sorted(issues, key=lambda x: x.get("score", 0), reverse=True)[:3]
+        for idx, issue in enumerate(top_issues, 1):
+            severity = (issue.get("severity") or "MED").upper()
+            message = issue.get("title") or issue.get("message") or "이슈"
+            issue_color = _get_risk_color(severity)
+            issue_data = [
+                [Paragraph(f"{idx}. {message}", ParagraphStyle(
+                    name="IssueText",
+                    fontName=font_name,
+                    fontSize=11,
+                    textColor=colors.HexColor("#1a1a1a"),
+                ))],
+            ]
+            issue_table = Table(issue_data, colWidths=[170*mm])
+            issue_table.setStyle(TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("BOX", (0, 0), (-1, -1), 1.5, issue_color),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fafafa")),
+            ]))
+            story.append(issue_table)
+            story.append(Spacer(1, 3*mm))
     else:
-        story.append(Paragraph("검출된 이슈가 없습니다.", styles["KoBody"]))
+        story.append(Paragraph("📌 주요 발견사항 (TOP 3)", styles["SectionTitle"]))
+        story.append(Paragraph("✅ 특별한 위험 요소가 발견되지 않았습니다.", styles["Body"]))
+        story.append(Spacer(1, 3*mm))
 
-    story.append(PageBreak())
-
-    # ----------------------------------------------------------------------------------
-    # 부록: 본문 일부 프리뷰
-    # ----------------------------------------------------------------------------------
-    preview = context.get("preview_sentences") or []
-    if preview:
-        story.append(Paragraph("부록: 본문 미리보기", styles["KoH2"]))
-        for i, s in enumerate(preview, 1):
-            story.append(Paragraph(f"{i}. {s}", styles["KoBody"]))
+    story.append(Spacer(1, 5*mm))
+    story.append(Paragraph("📄 상세 분석 (전체 이슈)", styles["SectionTitle"]))
+    if issues:
+        for idx, issue in enumerate(issues, 1):
+            severity = (issue.get("severity") or "MED").upper()
+            message = issue.get("title") or issue.get("message") or "이슈"
+            reasons = issue.get("reasons") or []
+            story.append(Paragraph(f"{idx}. {message}", styles["BodyBold"]))
+            info_line = f"중요도: {severity}"
+            if issue.get("level"):
+                level_map = {"critical": "위험", "warning": "주의", "safe": "양호"}
+                info_line += f" | 등급: {level_map.get(issue.get('level'), issue.get('level'))}"
+            story.append(Paragraph(info_line, styles["Small"]))
+            if reasons:
+                for reason in reasons:
+                    story.append(Paragraph(f"  • {reason}", styles["Body"]))
+            story.append(Spacer(1, 4))
     else:
-        story.append(Paragraph("본문 미리보기가 없습니다.", styles["KoBody"]))
+        story.append(Paragraph("✅ 상세 분석에서도 이슈가 발견되지 않았습니다.", styles["Body"]))
+    story.append(Spacer(1, 5*mm))
 
-    # ----------------------------------------------------------------------------------
+    # ==================================================================================
+    # 계약 정보 요약
+    # ==================================================================================
+    extracted = context.get("extracted_fields") or {}
+    
+    def safe_get_value(field_data, *keys):
+        """필드에서 안전하게 값 추출"""
+        if not field_data:
+            return None
+        
+        # dict인 경우 value 키로 접근
+        if isinstance(field_data, dict):
+            # "value" 키가 있으면 먼저 시도
+            if "value" in field_data:
+                val = field_data["value"]
+                # value도 dict이고 keys가 제공되면 해당 키로 접근
+                if isinstance(val, dict) and keys:
+                    # keys를 순차적으로 탐색
+                    for key in keys:
+                        if isinstance(val, dict):
+                            val = val.get(key)
+                        else:
+                            return None
+                    return val
+                return val
+            # "value" 키가 없으면 keys로 직접 접근
+            elif keys:
+                val = field_data
+                for key in keys:
+                    if isinstance(val, dict):
+                        val = val.get(key)
+                    else:
+                        return None
+                return val
+            # keys도 없고 value도 없으면 필드 데이터 자체 반환
+            return field_data
+        
+        return field_data
+    
+    # 보증금/월세
+    rent = extracted.get("rent", {})
+    deposit = safe_get_value(rent, "deposit")
+    monthly_rent = safe_get_value(rent, "monthly_rent")
+
+    # 계약기간
+    period = extracted.get("period", {})
+    start_date = safe_get_value(period, "start")
+    end_date = safe_get_value(period, "end")
+
+    # 주소
+    address = extracted.get("address", {})
+    address_value = safe_get_value(address)
+    if address_value and not isinstance(address_value, str):
+        address_value = str(address_value)
+    address_value = address_value or ""
+
+    # 확정일자
+    conf_date = extracted.get("confirmation_date", {})
+    # 계약 유형
+    contract_type_val = safe_get_value(extracted.get("contract_type"))
+    conf_value = safe_get_value(conf_date)
+    if conf_value and not isinstance(conf_value, str):
+        conf_value = str(conf_value)
+    conf_value = conf_value or ""
+
+    story.append(Paragraph("💰 금액 정보", styles["SectionTitle"]))
+    money_data = [
+        ["보증금", _format_number(deposit)],
+        ["월세", _format_number(monthly_rent)],
+    ]
+    story.append(_create_info_table(money_data, font_name))
+    story.append(Spacer(1, 5*mm))
+
+    story.append(Paragraph("📅 계약 기간", styles["SectionTitle"]))
+    period_data = [
+        ["시작일", _format_date(start_date)],
+        ["종료일", _format_date(end_date)],
+    ]
+    story.append(_create_info_table(period_data, font_name))
+    story.append(Spacer(1, 5*mm))
+
+    story.append(Paragraph("📍 기타 정보", styles["SectionTitle"]))
+    other_data = [
+        ["계약 유형", _format_contract_type(contract_type_val)],
+        ["소재지", address_value if address_value else "미기재"],
+        ["확정일자", conf_value if conf_value else "미기재"],
+    ]
+    story.append(_create_info_table(other_data, font_name))
+    story.append(Spacer(1, 8*mm))
+
+    # ==================================================================================
+    # 상세 분석 (필요시)
+    # ==================================================================================
+    if len(issues) > 3:
+        story.append(PageBreak())
+        story.append(Paragraph("📄 상세 분석", styles["SectionTitle"]))
+        story.append(Spacer(1, 3*mm))
+        
+        for idx, issue in enumerate(issues[3:], 4):
+            severity = (issue.get("severity") or "MED").upper()
+            message = issue.get("title") or issue.get("message") or "이슈"
+            reasons = issue.get("reasons") or []
+            
+            story.append(Paragraph(f"{idx}. {message}", styles["BodyBold"]))
+            story.append(Paragraph(f"중요도: {severity}", styles["Small"]))
+            
+            if reasons:
+                for reason in reasons[:2]:  # 최대 2개만
+                    story.append(Paragraph(f"  • {reason}", styles["Body"]))
+            
+            story.append(Spacer(1, 4*mm))
+
+    # ==================================================================================
+    # 푸터
+    # ==================================================================================
+    story.append(Spacer(1, 10*mm))
+    story.append(Paragraph(
+        "이 리포트는 AI 기반으로 자동 생성되었으며, 참고용으로만 사용하시기 바랍니다.",
+        styles["Small"]
+    ))
+
     # 빌드
-    # ----------------------------------------------------------------------------------
     doc.build(story)
     pdf_bytes = buffer.getvalue()
     buffer.close()
     return pdf_bytes
-
-

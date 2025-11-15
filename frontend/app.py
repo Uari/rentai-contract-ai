@@ -5,20 +5,58 @@ import streamlit as st
 API = st.secrets.get("API_URL", "http://127.0.0.1:8000")
 st.set_page_config(page_title="전세계약서 분석", layout="wide")
 
-# ---- 작은 CSS로 배지/표 단정히
+# ---- 글로벌 스타일 & 헬퍼
 st.markdown("""
 <style>
-.badge {display:inline-block;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:600;color:white;}
-.badge.high {background:#d92d20;}
-.badge.med  {background:#f59e0b;}
-.badge.low  {background:#16a34a;}
-.small-muted{color:#6b7280;font-size:12px}
-.kv-key {width:180px;color:#374151;font-weight:600}
-.kv-val {color:#111827}
-.card {border:1px solid #e5e7eb;padding:14px;border-radius:10px;background:#fff}
-h3 {margin-top:0.6rem}
+.card{border:1px solid #e5e7eb;border-radius:12px;padding:16px;background:#fff;box-shadow:0 2px 6px rgba(15,23,42,.05);}
+.small-muted{color:#6b7280;font-size:12px;}
+.kv-val{font-size:17px;font-weight:600;color:#111827;}
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;color:#fff;}
+.badge.high{background:#dc2626;}
+.badge.med{background:#f97316;}
+.badge.low{background:#059669;}
+.risk-card{padding:18px;border-left:6px solid var(--risk-color);background:var(--risk-bg);border-radius:12px;margin-bottom:18px;}
+.risk-title{font-size:20px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:8px;}
+.risk-desc{color:#374151;font-size:14px;margin-bottom:6px;}
+.risk-meta{color:#6b7280;font-size:13px;}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px;}
+.summary-item{background:#f9fafb;border-radius:10px;padding:12px;}
+.summary-item h4{margin:0;font-size:13px;color:#6b7280;}
+.summary-item p{margin:4px 0 0;font-weight:600;color:#111827;font-size:18px;}
+.issue-highlight{border-left:4px solid #e5e7eb;padding-left:12px;margin-bottom:16px;}
+.issue-meta{font-size:12px;color:#6b7280;margin-top:4px;}
+.issue-chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:600;}
+.chip-critical{background:#fee2e2;color:#b91c1c;}
+.chip-warning{background:#fef3c7;color:#b45309;}
+.chip-safe{background:#d1fae5;color:#065f46;}
+.detail-issue-card{border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-bottom:12px;background:#fff;box-shadow:0 2px 6px rgba(15,23,42,.04);}
+.detail-issue-title{font-size:17px;font-weight:600;color:#0f172a;display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.detail-issue-meta{font-size:12px;color:#6b7280;margin-top:4px;display:flex;gap:12px;flex-wrap:wrap;}
+.detail-issue-body{font-size:12px;color:#475467;line-height:1.5;margin-top:10px;}
+.issue-list{margin:6px 0 0 0;padding-left:18px;}
+.issue-list li{font-size:12px;margin-bottom:4px;color:#111827;}
 </style>
 """, unsafe_allow_html=True)
+
+RISK_UI = {
+    "critical": {"label": "위험", "icon": "🚨", "color": "#dc2626", "bg": "#fef2f2",
+                 "desc": "즉시 조치가 필요한 항목이 있습니다."},
+    "warning": {"label": "주의", "icon": "⚠️", "color": "#f97316", "bg": "#fff7ed",
+                "desc": "주의가 필요한 항목이 있습니다."},
+    "safe": {"label": "양호", "icon": "✅", "color": "#16a34a", "bg": "#ecfccb",
+             "desc": "특별한 위험이 발견되지 않았습니다."}
+}
+
+CONTRACT_LABEL = {"jeonse": "전세", "wolse": "월세"}
+SEVERITY_LABEL = {"HIGH": "높음", "MED": "보통", "LOW": "낮음"}
+
+def get_risk_ui(level: str):
+    return RISK_UI.get(level or "safe", RISK_UI["safe"])
+
+def format_contract_type(value):
+    if not value:
+        return "미기재"
+    return CONTRACT_LABEL.get(str(value).lower(), str(value))
 
 st.title("임대차 계약서 분석")
 
@@ -26,7 +64,7 @@ col_left, col_right = st.columns([1, 2])
 
 with col_left:
     st.subheader("1) 파일 업로드")
-    file = st.file_uploader("PDF 업로드", type=["pdf"])
+    file = st.file_uploader("PDF/이미지 업로드", type=["pdf", "jpg", "jpeg", "png", "bmp", "tiff", "tif"])
     k = st.slider("근거 검색 k", 1, 8, 3)
     run = st.button("분석 실행", type="primary", use_container_width=True)
 
@@ -47,22 +85,36 @@ with col_right:
     if not data:
         st.info("분석을 실행하면 결과가 여기에 표시됩니다.")
     else:
-        # --- 상단 요약 카드
-        s = data["summary"]
+        risk_info = data.get("risk", {})
+        risk_meta = get_risk_ui(risk_info.get("level", "safe"))
+        risk_issues = risk_info.get("issues") or data.get("issues", [])
+        issue_count = len(risk_issues)
+        extracted = data.get("extracted_fields", {})
+        contract_value = extracted.get("contract_type", {}).get("value")
+        contract_label = format_contract_type(contract_value)
+
         st.markdown(f"""
-<div class="card">
-  <div style="display:flex;gap:32px;flex-wrap:wrap">
-    <div><div class="small-muted">파일명</div><div class="kv-val">{s['filename']}</div></div>
-    <div><div class="small-muted">페이지</div><div class="kv-val">{s['pages']}</div></div>
-    <div><div class="small-muted">표 검출</div><div class="kv-val">{s['tables']}</div></div>
-    <div><div class="small-muted">서명 검출</div><div class="kv-val">{s['signatures']}</div></div>
-  </div>
+<div class="risk-card" style="--risk-color:{risk_meta['color']};--risk-bg:{risk_meta['bg']}">
+  <div class="risk-title">{risk_meta['icon']} {risk_meta['label']}</div>
+  <div class="risk-desc">{risk_meta['desc']}</div>
+  <div class="risk-meta">감지된 이슈 {issue_count}건 · 총 점수 {risk_info.get("total_score", 0)}</div>
 </div>
 """, unsafe_allow_html=True)
 
-        st.divider()
+        s = data.get("summary", {})
+        summary_items = [
+            ("파일명", s.get("filename", "-")),
+            ("계약 유형", contract_label),
+            ("페이지 수", s.get("pages", "-")),
+            ("표 검출", s.get("tables", "-")),
+            ("서명/날인", "있음" if s.get("signatures") else "없음"),
+        ]
+        grid_html = "<div class='summary-grid'>"
+        for label, value in summary_items:
+            grid_html += f"<div class='summary-item'><h4>{label}</h4><p>{value}</p></div>"
+        grid_html += "</div>"
+        st.markdown(grid_html, unsafe_allow_html=True)
 
-        # --- 필드 요약(2열)
         st.markdown("### 핵심 필드")
         cols = st.columns(2)
         for i, f in enumerate(data["fields"]):
@@ -76,27 +128,82 @@ with col_right:
 
         st.divider()
 
-        # --- 이슈(배지 + 테이블)
-        st.markdown("### 위험/주의 이슈")
-        if not data["issues"]:
+        st.markdown("### 📌 주요 이슈 (TOP 3)")
+        if not risk_issues:
             st.success("발견된 이슈가 없습니다.")
         else:
-            def badge(sev):
-                s = sev.lower()
-                return f'<span class="badge {{"high":"high","med":"med"}.get(s,"low")}">{sev}</span>'
-            rows = []
-            for it in data["issues"]:
-                rows.append([
-                    it["code"],
-                    badge(it["severity"]),
-                    it["message"],
-                    len(it.get("evidence", [])),
-                ])
-            st.markdown("""<div class="card">""", unsafe_allow_html=True)
-            st.markdown("| 코드 | 심각도 | 메시지 | 근거수 |\n|---|---|---|---|", unsafe_allow_html=True)
-            for r in rows:
-                st.markdown(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} |", unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+            top_issues = risk_issues[:3]
+            for idx, issue in enumerate(top_issues, 1):
+                level = (issue.get("level") or "warning").lower()
+                level_label = get_risk_ui(level)["label"]
+                chip_class = {"critical": "chip-critical", "warning": "chip-warning", "safe": "chip-safe"}.get(level, "chip-warning")
+                severity = SEVERITY_LABEL.get((issue.get("severity") or "MED").upper(), "보통")
+                title = issue.get("title") or issue.get("message") or issue.get("code") or "이슈"
+                reasons = issue.get("reasons", [])
+                st.markdown(f"""
+<div class="card issue-highlight">
+  <div class="issue-title">{idx}. {title}</div>
+  <div class="issue-meta">
+    <span class="issue-chip {chip_class}">{level_label}</span>
+    <span class="small-muted">중요도 {severity}</span>
+  </div>
+  {"".join([f"<div>- {r}</div>" for r in reasons[:3]]) or "<div class='small-muted'>상세 내용은 아래 전체 이슈에서 확인하세요.</div>"}
+</div>
+""", unsafe_allow_html=True)
+
+        st.markdown("### 📄 상세 이슈 (전체)")
+        if not risk_issues:
+            st.info("등록된 이슈가 없습니다.")
+        else:
+            for idx, issue in enumerate(risk_issues, 1):
+                title = issue.get("title") or issue.get("message") or issue.get("code") or "이슈"
+                level = (issue.get("level") or "warning").lower()
+                level_meta = get_risk_ui(level)
+                severity = SEVERITY_LABEL.get((issue.get("severity") or "MED").upper(), "보통")
+                reasons = issue.get("reasons") or []
+                refs = issue.get("references") or []
+                chip_class = {"critical": "chip-critical", "warning": "chip-warning", "safe": "chip-safe"}.get(level, "chip-warning")
+
+                reason_html = ""
+                if reasons:
+                    reason_items = "".join(f"<li>{r}</li>" for r in reasons)
+                    reason_html = f"""
+<div class="detail-issue-body">
+  <div class="small-muted">주요 근거</div>
+  <ul class="issue-list">{reason_items}</ul>
+</div>
+"""
+
+                ref_html = ""
+                if refs:
+                    ref_items = "".join(
+                        f"<li><strong>{ref.get('source','근거')}</strong> - {ref.get('text','')}</li>"
+                        for ref in refs
+                    )
+                    ref_html = f"""
+<div class="detail-issue-body">
+  <div class="small-muted">법적 근거</div>
+  <ul class="issue-list">{ref_items}</ul>
+</div>
+"""
+
+                st.markdown(
+                    f"""
+<div class="detail-issue-card">
+  <div class="detail-issue-title">
+    <span>{idx}. {title}</span>
+    <span class="issue-chip {chip_class}">{level_meta['label']}</span>
+  </div>
+  <div class="detail-issue-meta">
+    <span>중요도 {severity}</span>
+    <span>룰 코드 {issue.get('code','-')}</span>
+  </div>
+  {reason_html or "<div class='detail-issue-body small-muted'>추가 설명이 없습니다.</div>"}
+  {ref_html}
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
 
         st.divider()
 

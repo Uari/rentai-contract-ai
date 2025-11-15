@@ -40,11 +40,35 @@ from app.services.rag.retrieval import RULE_HINTS
 from app.services.rag.retrieval import search as law_search
 from app.services.rag.retrieval import kb_status as kb_status_fn, search as rag_search
 
+# OCR 관련 import
+from app.services.parser_pdf.ocr_extractor import (
+    extract_text_auto,
+    is_image_file,
+    is_pdf_file,
+    OCR_AVAILABLE,
+    PDF2IMAGE_AVAILABLE
+)
+
+# Naver Clova OCR import (최고 정확도)
+try:
+    from app.services.parser_pdf.naver_clova_ocr import (
+        extract_text_auto_clova,
+        check_api_credentials as check_clova_credentials
+    )
+    # API 키 확인
+    try:
+        check_clova_credentials()
+        CLOVA_OCR_AVAILABLE = True
+    except:
+        CLOVA_OCR_AVAILABLE = False
+except ImportError:
+    CLOVA_OCR_AVAILABLE = False
+
 # ============================================================
 # ✅ 앱 설정
 # ============================================================
 MAX_FILE_MB = 20
-ALLOWED_SUFFIX = (".pdf",)
+ALLOWED_SUFFIX = (".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 
 app = FastAPI(title="RentAI Parser API", version="0.1.0")
 
@@ -66,10 +90,20 @@ def health() -> Dict[str, Any]:
 # ✅ 분석 API (텍스트 + 필드 + 룰 평가)
 # ============================================================
 @app.post("/analyze/pdf")
-async def analyze_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
+async def analyze_pdf(file: UploadFile = File(...), use_ocr: bool = Query(False, description="OCR 사용 강제 (스캔본인 경우)")) -> Dict[str, Any]:
+    """
+    임대차 계약서 분석 API (PDF, 이미지 지원)
+    
+    - 이미지 파일: 자동으로 Clova OCR 사용
+    - PDF 파일: 일반 파서 사용 (use_ocr=true면 Clova OCR 사용)
+    - 스캔본 PDF: 자동으로 Clova OCR로 fallback
+    """
     # 🔍 파일명 체크
     if not file.filename.lower().endswith(ALLOWED_SUFFIX):
-        raise HTTPException(status_code=400, detail="PDF만 업로드 해주세요.")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"지원하지 않는 파일 형식입니다. 지원 형식: {', '.join(ALLOWED_SUFFIX)}"
+        )
 
     # 🔍 용량 제한
     content = await file.read()
@@ -77,13 +111,77 @@ async def analyze_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
     if size_mb > MAX_FILE_MB:
         raise HTTPException(status_code=413, detail=f"파일 용량 초과(최대 {MAX_FILE_MB}MB)")
 
-    # 🔍 PDF 파싱
-    try:
-        parsed = parse_pdf(content)
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"텍스트 파싱 실패: {e}")
+    # 🔍 파일 타입 판별 및 텍스트 추출
+    from app.services.parser_pdf.ocr_extractor import is_image_file, is_pdf_file
+    
+    text_full = ""
+    page_count = 0
+    
+    # 이미지 파일이면 Clova OCR 사용
+    if is_image_file(file.filename):
+        if CLOVA_OCR_AVAILABLE:
+            try:
+                ocr_result = extract_text_auto_clova(content, file.filename)
+                text_full = ocr_result['text']
+                page_count = ocr_result['page_count']
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"이미지 OCR 실패: {e}")
+        else:
+            raise HTTPException(
+                status_code=503, 
+                detail="이미지 파일은 Clova OCR이 필요합니다. .env에 API 키를 설정하세요."
+            )
+    # PDF 파일
+    elif is_pdf_file(file.filename):
+        # OCR 강제 사용 또는 스캔본 감지
+        if use_ocr:
+            if CLOVA_OCR_AVAILABLE:
+                try:
+                    ocr_result = extract_text_auto_clova(content, file.filename)
+                    text_full = ocr_result['text']
+                    page_count = ocr_result['page_count']
+                except Exception as e:
+                    raise HTTPException(status_code=422, detail=f"PDF OCR 실패: {e}")
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail="OCR 사용을 위해서는 Clova OCR API 키가 필요합니다."
+                )
+        else:
+            # 일반 PDF 파싱 시도
+            try:
+                parsed = parse_pdf(content)
+                text_full = parsed["text_full"]
+                page_count = parsed["page_count"]
+                
+                # 추출된 텍스트가 너무 적으면 스캔본일 가능성 → Clova OCR로 재시도
+                if len(text_full.strip()) < 100 and CLOVA_OCR_AVAILABLE:
+                    try:
+                        ocr_result = extract_text_auto_clova(content, file.filename)
+                        text_full = ocr_result['text']
+                        page_count = ocr_result['page_count']
+                    except:
+                        pass  # OCR 실패해도 원본 텍스트 사용
+            except Exception as e:
+                # 일반 파싱 실패 → Clova OCR 시도
+                if CLOVA_OCR_AVAILABLE:
+                    try:
+                        ocr_result = extract_text_auto_clova(content, file.filename)
+                        text_full = ocr_result['text']
+                        page_count = ocr_result['page_count']
+                    except Exception as ocr_err:
+                        raise HTTPException(status_code=422, detail=f"텍스트 추출 실패: PDF 파싱 실패 ({e}), OCR도 실패 ({ocr_err})")
+                else:
+                    raise HTTPException(status_code=422, detail=f"텍스트 파싱 실패: {e}")
+    else:
+        raise HTTPException(status_code=400, detail="지원하지 않는 파일 형식입니다.")
+    
+    # 문장 분리 (parsed 객체가 없으므로 직접 처리)
+    # extract_all 함수는 딕셔너리 리스트 형식을 기대함 (id, page, text 필드 필요)
+    raw_sentences = [s.strip() for s in text_full.split('\n') if s.strip()]
+    sentences = [{"id": i, "page": 1, "text": s} for i, s in enumerate(raw_sentences)]
 
-    extracted = extract_all(parsed["text_full"], parsed["sentences"])
+    extracted = extract_all(text_full, sentences)
 
     # 표 추출
     try:
@@ -93,13 +191,13 @@ async def analyze_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
 
     # 서명 감지
     try:
-        signature = detect_signature(parsed["sentences"])
+        signature = detect_signature(sentences)
     except Exception:
         signature = False
 
     # ✅ 룰 평가
     extras = {"signature_detected": signature, "tables_found": len(tables)}
-    risk = evaluate_rules(extracted, parsed["text_full"], extras, RULES_PATH)
+    risk = evaluate_rules(extracted, text_full, extras, RULES_PATH)
 
     # 룰 엔진 결과에 법령 근거 인용 붙이기
     issues = risk.get("issues", [])
@@ -125,7 +223,7 @@ async def analyze_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
     # 1. summary 생성
     summary = {
         "filename": file.filename,
-        "pages": parsed["page_count"],
+        "pages": page_count,
         "tables": len(tables),
         "signatures": 1 if signature else 0,
     }
@@ -195,51 +293,118 @@ async def analyze_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
         # 하위 호환을 위한 원본 데이터도 포함
         "file": file.filename,
         "size_mb": round(size_mb, 2),
-        "page_count": parsed["page_count"],
-        "sentence_count": parsed["sentence_count"],
+        "page_count": page_count,
+        "sentence_count": len(sentences),
         "tables_found": len(tables),
         "signature_detected": signature,
-        "preview_sentences": parsed["sentences"][:5],
+        "preview_sentences": sentences[:5],
         "extracted_fields": extracted,
         "risk": risk,
     }
 
 # ============================================================
-# ✅ PDF 리포트 생성 + 다운로드
+# ✅ 리포트 생성 + 다운로드 (PDF/이미지 지원)
 # ============================================================
 @app.post("/report/pdf")
-async def report_pdf(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="PDF만 업로드 해주세요.")
+async def report_pdf(file: UploadFile = File(...), use_ocr: bool = Query(False, description="OCR 사용 강제")):
+    """
+    분석 리포트 생성 (PDF/이미지 모두 지원)
+    """
+    # 파일명 체크
+    if not file.filename.lower().endswith(ALLOWED_SUFFIX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 파일 형식입니다. 지원 형식: {', '.join(ALLOWED_SUFFIX)}"
+        )
+    
     content = await file.read()
-
-    try:
-        parsed = parse_pdf(content)
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"텍스트 파싱 실패: {e}")
+    size_mb = len(content) / (1024 * 1024)
+    
+    # 파일 타입 판별 및 텍스트 추출
+    from app.services.parser_pdf.ocr_extractor import is_image_file, is_pdf_file
+    
+    text_full = ""
+    page_count = 0
+    
+    # 이미지 파일이면 Clova OCR 사용
+    if is_image_file(file.filename):
+        if CLOVA_OCR_AVAILABLE:
+            try:
+                ocr_result = extract_text_auto_clova(content, file.filename)
+                text_full = ocr_result['text']
+                page_count = ocr_result['page_count']
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"이미지 OCR 실패: {e}")
+        else:
+            raise HTTPException(
+                status_code=503,
+                detail="이미지 파일은 Clova OCR이 필요합니다."
+            )
+    # PDF 파일
+    elif is_pdf_file(file.filename):
+        if use_ocr:
+            if CLOVA_OCR_AVAILABLE:
+                try:
+                    ocr_result = extract_text_auto_clova(content, file.filename)
+                    text_full = ocr_result['text']
+                    page_count = ocr_result['page_count']
+                except Exception as e:
+                    raise HTTPException(status_code=422, detail=f"PDF OCR 실패: {e}")
+            else:
+                raise HTTPException(status_code=503, detail="OCR 사용을 위해서는 Clova OCR API 키가 필요합니다.")
+        else:
+            try:
+                parsed = parse_pdf(content)
+                text_full = parsed["text_full"]
+                page_count = parsed["page_count"]
+                
+                # 스캔본 감지 및 자동 OCR
+                if len(text_full.strip()) < 100 and CLOVA_OCR_AVAILABLE:
+                    try:
+                        ocr_result = extract_text_auto_clova(content, file.filename)
+                        text_full = ocr_result['text']
+                        page_count = ocr_result['page_count']
+                    except:
+                        pass
+            except Exception as e:
+                if CLOVA_OCR_AVAILABLE:
+                    try:
+                        ocr_result = extract_text_auto_clova(content, file.filename)
+                        text_full = ocr_result['text']
+                        page_count = ocr_result['page_count']
+                    except Exception as ocr_err:
+                        raise HTTPException(status_code=422, detail=f"텍스트 추출 실패: {e}, OCR도 실패: {ocr_err}")
+                else:
+                    raise HTTPException(status_code=422, detail=f"텍스트 파싱 실패: {e}")
+    else:
+        raise HTTPException(status_code=400, detail="지원하지 않는 파일 형식입니다.")
+    
+    # 문장 분리
+    raw_sentences = [s.strip() for s in text_full.split('\n') if s.strip()]
+    sentences = [{"id": i, "page": 1, "text": s} for i, s in enumerate(raw_sentences)]
 
     try:
         tables = extract_tables(content)
     except Exception:
         tables = []
     try:
-        signature = detect_signature(parsed["sentences"])
+        signature = detect_signature(sentences)
     except Exception:
         signature = False
 
-    extracted = extract_all(parsed["text_full"], parsed["sentences"])
+    extracted = extract_all(text_full, sentences)
 
     extras = {"signature_detected": signature, "tables_found": len(tables)}
-    risk = evaluate_rules(extracted, parsed["text_full"], extras, RULES_PATH)
+    risk = evaluate_rules(extracted, text_full, extras, RULES_PATH)
 
     context = {
         "file": file.filename,
-        "page_count": parsed["page_count"],
-        "sentence_count": parsed["sentence_count"],
+        "page_count": page_count,
+        "sentence_count": len(sentences),
         "tables_found": len(tables),
         "signature_detected": signature,
         "extracted_fields": extracted,
-        "preview_sentences": parsed["sentences"][:5],
+        "preview_sentences": sentences[:5],
         "risk": risk,
     }
 
@@ -270,3 +435,307 @@ def api_kb_status() -> Dict[str, Any]:
 def api_reference_law(q: str = Query(..., description="검색어"), k: int = 3) -> List[Dict[str, Any]]:
     """RAG 검색(간단 확인용)"""
     return rag_search(q, k=k)
+
+# ============================================================
+# ✅ PDF 텍스트 추출 API (텍스트만 조회)
+# ============================================================
+@app.post("/extract/pdf-text")
+async def extract_pdf_text(
+    file: UploadFile = File(...),
+    format: str = Query("full", description="반환 형식: 'full'(전체), 'pages'(페이지별), 'sentences'(문장별)"),
+    use_ocr: bool = Query(False, description="OCR 사용 강제")
+) -> Dict[str, Any]:
+    """
+    PDF/이미지에서 텍스트만 추출하여 반환
+    
+    - format='full': 전체 텍스트를 하나의 문자열로 반환
+    - format='pages': 페이지별로 분리하여 반환
+    - format='sentences': 문장별로 분리하여 반환
+    """
+    # 파일명 체크
+    if not file.filename.lower().endswith(ALLOWED_SUFFIX):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"지원하지 않는 파일 형식입니다. 지원 형식: {', '.join(ALLOWED_SUFFIX)}"
+        )
+    
+    # 용량 제한
+    content = await file.read()
+    size_mb = len(content) / (1024 * 1024)
+    if size_mb > MAX_FILE_MB:
+        raise HTTPException(status_code=413, detail=f"파일 용량 초과(최대 {MAX_FILE_MB}MB)")
+    
+    # 파일 타입 판별 및 텍스트 추출
+    from app.services.parser_pdf.ocr_extractor import is_image_file, is_pdf_file
+    
+    text_full = ""
+    page_count = 0
+    parsed = None
+    
+    # 이미지 파일이면 Clova OCR 사용
+    if is_image_file(file.filename):
+        if CLOVA_OCR_AVAILABLE:
+            try:
+                ocr_result = extract_text_auto_clova(content, file.filename)
+                text_full = ocr_result['text']
+                page_count = ocr_result['page_count']
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"이미지 OCR 실패: {e}")
+        else:
+            raise HTTPException(status_code=503, detail="이미지 파일은 Clova OCR이 필요합니다.")
+    # PDF 파일
+    elif is_pdf_file(file.filename):
+        if use_ocr:
+            if CLOVA_OCR_AVAILABLE:
+                try:
+                    ocr_result = extract_text_auto_clova(content, file.filename)
+                    text_full = ocr_result['text']
+                    page_count = ocr_result['page_count']
+                except Exception as e:
+                    raise HTTPException(status_code=422, detail=f"PDF OCR 실패: {e}")
+            else:
+                raise HTTPException(status_code=503, detail="OCR 사용을 위해서는 Clova OCR API 키가 필요합니다.")
+        else:
+            try:
+                parsed = parse_pdf(content)
+                text_full = parsed["text_full"]
+                page_count = parsed["page_count"]
+                
+                # 스캔본 감지 및 자동 OCR
+                if len(text_full.strip()) < 100 and CLOVA_OCR_AVAILABLE:
+                    try:
+                        ocr_result = extract_text_auto_clova(content, file.filename)
+                        text_full = ocr_result['text']
+                        page_count = ocr_result['page_count']
+                        parsed = None  # OCR 사용 시 parsed는 None
+                    except:
+                        pass
+            except Exception as e:
+                if CLOVA_OCR_AVAILABLE:
+                    try:
+                        ocr_result = extract_text_auto_clova(content, file.filename)
+                        text_full = ocr_result['text']
+                        page_count = ocr_result['page_count']
+                        parsed = None
+                    except Exception as ocr_err:
+                        raise HTTPException(status_code=422, detail=f"텍스트 추출 실패: {e}, OCR도 실패: {ocr_err}")
+                else:
+                    raise HTTPException(status_code=422, detail=f"텍스트 파싱 실패: {e}")
+    else:
+        raise HTTPException(status_code=400, detail="지원하지 않는 파일 형식입니다.")
+    
+    # OCR을 사용한 경우 (parsed가 None) 문장 분리
+    if parsed is None:
+        raw_sentences = [s.strip() for s in text_full.split('\n') if s.strip()]
+        sentences = [{"id": i, "page": 1, "text": s} for i, s in enumerate(raw_sentences)]
+        pages = [{"page": 1, "text": text_full}]
+        sentence_count = len(sentences)
+    else:
+        sentences = parsed["sentences"]
+        pages = parsed["pages"]
+        sentence_count = parsed["sentence_count"]
+    
+    # 형식에 따라 반환
+    if format == "pages":
+        return {
+            "filename": file.filename,
+            "page_count": page_count,
+            "format": "pages",
+            "pages": pages,  # [{"page": 1, "text": "..."}, ...]
+        }
+    elif format == "sentences":
+        return {
+            "filename": file.filename,
+            "sentence_count": sentence_count,
+            "format": "sentences",
+            "sentences": sentences,  # [{"id": "p1_s1", "page": 1, "text": "..."}, ...]
+        }
+    else:  # format == "full"
+        return {
+            "filename": file.filename,
+            "page_count": page_count,
+            "sentence_count": sentence_count,
+            "format": "full",
+            "text": text_full,  # 전체 텍스트
+            "text_length": len(text_full),
+        }
+
+# ============================================================
+# ✅ 통합 텍스트 추출 API (PDF + 이미지, OCR 지원)
+# ============================================================
+@app.post("/extract/text/clova")
+async def extract_text_clova(
+    file: UploadFile = File(...),
+    format: str = Query("full", description="반환 형식: 'full'(전체), 'pages'(페이지별)"),
+    min_confidence: float = Query(0.0, description="최소 신뢰도 (0.0~1.0)")
+) -> Dict[str, Any]:
+    """
+    Naver Clova OCR로 텍스트 추출 (최고 정확도 95~99%)
+    - 한글 문서 인식에 최적화
+    - 월 1,000건 무료
+    
+    지원 파일: PDF, JPG, PNG, BMP, TIFF
+    """
+    if not CLOVA_OCR_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Naver Clova OCR이 설정되지 않았습니다. .env 파일에 API 키를 추가하세요."
+        )
+    
+    # 파일명 체크
+    fname = file.filename.lower() if file.filename else ""
+    if not fname.endswith(ALLOWED_SUFFIX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 파일입니다. 허용: {', '.join(ALLOWED_SUFFIX)}"
+        )
+    
+    # 파일 읽기
+    content = await file.read()
+    
+    # 용량 체크
+    size_mb = len(content) / (1024 * 1024)
+    if size_mb > MAX_FILE_MB:
+        raise HTTPException(
+            status_code=413,
+            detail=f"파일이 너무 큽니다 (최대 {MAX_FILE_MB}MB)"
+        )
+    
+    # Clova OCR 수행
+    try:
+        result = extract_text_auto_clova(content, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Clova OCR 실패: {str(e)}")
+    
+    # 신뢰도 필터링 (이미지인 경우)
+    if result['type'] == 'image' and min_confidence > 0 and 'fields' in result:
+        filtered_text = []
+        for field in result['fields']:
+            if field['confidence'] >= min_confidence:
+                filtered_text.append(field['text'])
+        result['text'] = '\n'.join(filtered_text)
+    
+    # 형식에 따라 반환
+    if format == "pages" and 'pages' in result:
+        return {
+            "filename": file.filename,
+            "type": result["type"],
+            "page_count": result["page_count"],
+            "format": "pages",
+            "pages": result["pages"],
+            "ocr_engine": "naver_clova"
+        }
+    else:
+        return {
+            "filename": file.filename,
+            "type": result["type"],
+            "page_count": result["page_count"],
+            "format": "full",
+            "text": result["text"],
+            "text_length": len(result["text"]),
+            "ocr_engine": "naver_clova"
+        }
+
+
+@app.post("/extract/text")
+async def extract_text(
+    file: UploadFile = File(...),
+    use_ocr: bool = Query(False, description="OCR 사용 여부 (이미지는 자동, PDF는 선택)"),
+    format: str = Query("full", description="반환 형식: 'full'(전체), 'pages'(페이지별)")
+) -> Dict[str, Any]:
+    """
+    PDF, 이미지 파일에서 텍스트 추출 (OCR 지원)
+    
+    지원 형식:
+    - PDF: .pdf
+    - 이미지: .jpg, .jpeg, .png, .bmp, .tiff, .tif
+    
+    - 이미지 파일: 자동으로 OCR 사용
+    - PDF 파일: use_ocr=True면 OCR 사용 (스캔본 처리)
+    """
+    # 파일명 체크
+    if not file.filename or not any(file.filename.lower().endswith(ext) for ext in ALLOWED_SUFFIX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 파일 형식입니다. 지원 형식: {', '.join(ALLOWED_SUFFIX)}"
+        )
+    
+    # 용량 제한
+    content = await file.read()
+    size_mb = len(content) / (1024 * 1024)
+    if size_mb > MAX_FILE_MB:
+        raise HTTPException(status_code=413, detail=f"파일 용량 초과(최대 {MAX_FILE_MB}MB)")
+    
+    # OCR 사용 가능 여부 확인
+    if (is_image_file(file.filename) or use_ocr) and not OCR_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="OCR 기능을 사용할 수 없습니다. pytesseract와 Tesseract OCR이 설치되어 있는지 확인하세요."
+        )
+    
+    if is_pdf_file(file.filename) and use_ocr and not PDF2IMAGE_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="PDF OCR 기능을 사용할 수 없습니다. pdf2image가 설치되어 있는지 확인하세요."
+        )
+    
+    # 텍스트 추출
+    try:
+        if is_image_file(file.filename):
+            # 이미지 파일은 항상 OCR 사용
+            result = extract_text_auto(content, file.filename, use_ocr=True)
+        elif is_pdf_file(file.filename):
+            if use_ocr:
+                # OCR로 추출
+                result = extract_text_auto(content, file.filename, use_ocr=True)
+            else:
+                # 일반 PDF 파서 시도
+                try:
+                    parsed = parse_pdf(content)
+                    result = {
+                        "type": "pdf",
+                        "pages": parsed["pages"],
+                        "text_full": parsed["text_full"],
+                        "page_count": parsed["page_count"]
+                    }
+                except Exception:
+                    # 실패 시 OCR로 재시도
+                    result = extract_text_auto(content, file.filename, use_ocr=True)
+        else:
+            raise HTTPException(status_code=400, detail="지원하지 않는 파일 형식입니다.")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"텍스트 추출 실패: {str(e)}")
+    
+    # 형식에 따라 반환
+    if format == "pages":
+        return {
+            "filename": file.filename,
+            "type": result["type"],
+            "page_count": result["page_count"],
+            "format": "pages",
+            "pages": result["pages"],
+        }
+    else:  # format == "full"
+        return {
+            "filename": file.filename,
+            "type": result["type"],
+            "page_count": result["page_count"],
+            "format": "full",
+            "text": result["text_full"],
+            "text_length": len(result["text_full"]),
+        }
+
+
+# ============================================================
+# ✅ 서버 실행
+# ============================================================
+if __name__ == "__main__":
+    import uvicorn
+    print("=" * 60)
+    print("🚀 RentAI Parser API 서버 시작")
+    print("=" * 60)
+    print(f"📡 서버 주소: http://localhost:8000")
+    print(f"📚 API 문서: http://localhost:8000/docs")
+    print(f"🔧 Clova OCR: {'✅ 사용 가능' if CLOVA_OCR_AVAILABLE else '❌ API 키 필요'}")
+    print("=" * 60)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

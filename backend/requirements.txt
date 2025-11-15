@@ -29,5 +29,9 @@ PyMuPDF==1.24.10
 pdfplumber==0.11.4
 pytesseract==0.3.13
 Pillow==10.4.0
+pdf2image==1.17.0
 reportlab==4.2.2
 python-pptx==0.6.23
+
+# --- Naver Clova OCR
+requests==2.32.3  # 이미 있음 (중복 방지)
