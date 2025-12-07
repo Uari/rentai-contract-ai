@@ -4,6 +4,7 @@ PDF 리포트 생성기 (ReportLab) - 사용자 친화 버전
 - 깔끔하고 직관적인 레이아웃
 - 색상 코딩으로 위험도 시각화
 - 핵심 정보 우선 배치
+- LLM 어드바이저 가이드 상세 포함
 """
 from __future__ import annotations
 
@@ -29,6 +30,8 @@ from reportlab.platypus import (
     TableStyle,
     PageBreak,
     KeepTogether,
+    ListFlowable,
+    ListItem
 )
 
 # --------------------------------------------------------------------------------------
@@ -118,6 +121,24 @@ def _build_styles() -> dict:
             textColor=colors.HexColor("#666666"),
             spaceAfter=2,
         ),
+        "GuideTitle": ParagraphStyle(
+            name="GuideTitle",
+            fontName=font_name,
+            fontSize=10,
+            leading=12,
+            textColor=colors.HexColor("#2c3e50"),
+            spaceBefore=4,
+            spaceAfter=2,
+        ),
+        "GuideBody": ParagraphStyle(
+            name="GuideBody",
+            fontName=font_name,
+            fontSize=9,
+            leading=13,
+            textColor=colors.HexColor("#4b5563"),
+            leftIndent=4,
+            spaceAfter=2,
+        ),
         "BigNumber": ParagraphStyle(
             name="BigNumber",
             fontName=font_name,
@@ -192,38 +213,6 @@ def _format_contract_type(value: Any) -> str:
     return mapping.get(str(value).lower(), str(value))
 
 
-def _create_summary_box(title: str, value: str, color: colors.Color, font_name: str) -> Table:
-    """요약 박스 생성"""
-    data = [
-        [Paragraph(title, ParagraphStyle(
-            name="BoxTitle",
-            fontName=font_name,
-            fontSize=9,
-            textColor=colors.HexColor("#666666"),
-            alignment=TA_CENTER,
-        ))],
-        [Paragraph(value, ParagraphStyle(
-            name="BoxValue",
-            fontName=font_name,
-            fontSize=14,
-            leading=18,
-            textColor=color,
-            alignment=TA_CENTER,
-        ))],
-    ]
-    
-    table = Table(data, colWidths=[45*mm])
-    table.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOX", (0, 0), (-1, -1), 1, color),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f8f9fa")),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-    ]))
-    return table
-
-
 def _create_info_table(data: List[List[str]], font_name: str) -> Table:
     """정보 테이블 생성"""
     table = Table(data, colWidths=[50*mm, 110*mm])
@@ -250,7 +239,7 @@ def _create_info_table(data: List[List[str]], font_name: str) -> Table:
 
 def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
     """
-    깔끔하고 사용자 친화적인 리포트 생성
+    깔끔하고 사용자 친화적인 리포트 생성 (LLM 가이드 반영)
     """
     styles = _build_styles()
     buffer = io.BytesIO()
@@ -331,16 +320,23 @@ def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
     story.append(Spacer(1, 5*mm))
 
     # ==================================================================================
-    # 주요 이슈 (TOP 3) + 상세 분석
+    # 주요 발견사항 및 가이드 (TOP 3)
     # ==================================================================================
     if issues:
-        story.append(Paragraph("📌 주요 발견사항 (TOP 3)", styles["SectionTitle"]))
+        story.append(Paragraph("📌 주요 발견사항 및 전문가 가이드 (TOP 3)", styles["SectionTitle"]))
         
+        # 중요도 순 정렬
         top_issues = sorted(issues, key=lambda x: x.get("score", 0), reverse=True)[:3]
+        
         for idx, issue in enumerate(top_issues, 1):
+            # KeepTogether로 이슈 단위가 페이지 넘김으로 잘리지 않게 함
+            issue_elements = []
+            
             severity = (issue.get("severity") or "MED").upper()
             message = issue.get("title") or issue.get("message") or "이슈"
             issue_color = _get_risk_color(severity)
+            
+            # --- 이슈 헤더 ---
             issue_data = [
                 [Paragraph(f"{idx}. {message}", ParagraphStyle(
                     name="IssueText",
@@ -360,37 +356,53 @@ def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
                 ("BOX", (0, 0), (-1, -1), 1.5, issue_color),
                 ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fafafa")),
             ]))
-            story.append(issue_table)
-            story.append(Spacer(1, 3*mm))
+            issue_elements.append(issue_table)
+            issue_elements.append(Spacer(1, 2*mm))
+            
+            # --- LLM 가이드 내용 ---
+            guide = issue.get("guide")
+            if guide:
+                # 1. 주의사항
+                if guide.get("caution"):
+                    issue_elements.append(Paragraph("⚠️ 주의사항", styles["GuideTitle"]))
+                    issue_elements.append(Paragraph(guide["caution"], styles["GuideBody"]))
+                
+                # 2. 대처 방법
+                if guide.get("action"):
+                    issue_elements.append(Paragraph("💡 대처 방법", styles["GuideTitle"]))
+                    actions = guide["action"]
+                    if isinstance(actions, list):
+                        for action in actions:
+                            issue_elements.append(Paragraph(f"• {action}", styles["GuideBody"]))
+                    else:
+                        issue_elements.append(Paragraph(f"• {str(actions)}", styles["GuideBody"]))
+                
+                # 3. 법적 근거
+                if guide.get("law"):
+                    issue_elements.append(Paragraph("⚖️ 관련 법령", styles["GuideTitle"]))
+                    issue_elements.append(Paragraph(guide["law"], styles["GuideBody"]))
+            
+            # 가이드가 없는 경우 기본 근거 표시
+            elif issue.get("reasons"):
+                issue_elements.append(Paragraph("🔍 상세 내용", styles["GuideTitle"]))
+                for r in issue["reasons"]:
+                    issue_elements.append(Paragraph(f"• {r}", styles["GuideBody"]))
+
+            issue_elements.append(Spacer(1, 5*mm))
+            story.append(KeepTogether(issue_elements))
+            
     else:
-        story.append(Paragraph("📌 주요 발견사항 (TOP 3)", styles["SectionTitle"]))
+        story.append(Paragraph("📌 주요 발견사항", styles["SectionTitle"]))
         story.append(Paragraph("✅ 특별한 위험 요소가 발견되지 않았습니다.", styles["Body"]))
         story.append(Spacer(1, 3*mm))
 
-    story.append(Spacer(1, 5*mm))
-    story.append(Paragraph("📄 상세 분석 (전체 이슈)", styles["SectionTitle"]))
-    if issues:
-        for idx, issue in enumerate(issues, 1):
-            severity = (issue.get("severity") or "MED").upper()
-            message = issue.get("title") or issue.get("message") or "이슈"
-            reasons = issue.get("reasons") or []
-            story.append(Paragraph(f"{idx}. {message}", styles["BodyBold"]))
-            info_line = f"중요도: {severity}"
-            if issue.get("level"):
-                level_map = {"critical": "위험", "warning": "주의", "safe": "양호"}
-                info_line += f" | 등급: {level_map.get(issue.get('level'), issue.get('level'))}"
-            story.append(Paragraph(info_line, styles["Small"]))
-            if reasons:
-                for reason in reasons:
-                    story.append(Paragraph(f"  • {reason}", styles["Body"]))
-            story.append(Spacer(1, 4))
-    else:
-        story.append(Paragraph("✅ 상세 분석에서도 이슈가 발견되지 않았습니다.", styles["Body"]))
     story.append(Spacer(1, 5*mm))
 
     # ==================================================================================
     # 계약 정보 요약
     # ==================================================================================
+    story.append(Paragraph("📝 계약 핵심 정보", styles["SectionTitle"]))
+    
     extracted = context.get("extracted_fields") or {}
     
     def safe_get_value(field_data, *keys):
@@ -398,14 +410,10 @@ def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
         if not field_data:
             return None
         
-        # dict인 경우 value 키로 접근
         if isinstance(field_data, dict):
-            # "value" 키가 있으면 먼저 시도
             if "value" in field_data:
                 val = field_data["value"]
-                # value도 dict이고 keys가 제공되면 해당 키로 접근
                 if isinstance(val, dict) and keys:
-                    # keys를 순차적으로 탐색
                     for key in keys:
                         if isinstance(val, dict):
                             val = val.get(key)
@@ -413,7 +421,6 @@ def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
                             return None
                     return val
                 return val
-            # "value" 키가 없으면 keys로 직접 접근
             elif keys:
                 val = field_data
                 for key in keys:
@@ -422,68 +429,46 @@ def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
                     else:
                         return None
                 return val
-            # keys도 없고 value도 없으면 필드 데이터 자체 반환
             return field_data
-        
         return field_data
     
-    # 보증금/월세
     rent = extracted.get("rent", {})
     deposit = safe_get_value(rent, "deposit")
     monthly_rent = safe_get_value(rent, "monthly_rent")
 
-    # 계약기간
     period = extracted.get("period", {})
     start_date = safe_get_value(period, "start")
     end_date = safe_get_value(period, "end")
 
-    # 주소
     address = extracted.get("address", {})
     address_value = safe_get_value(address)
     if address_value and not isinstance(address_value, str):
         address_value = str(address_value)
-    address_value = address_value or ""
-
-    # 확정일자
+    
     conf_date = extracted.get("confirmation_date", {})
-    # 계약 유형
     contract_type_val = safe_get_value(extracted.get("contract_type"))
     conf_value = safe_get_value(conf_date)
     if conf_value and not isinstance(conf_value, str):
         conf_value = str(conf_value)
-    conf_value = conf_value or ""
 
-    story.append(Paragraph("💰 금액 정보", styles["SectionTitle"]))
-    money_data = [
+    info_data = [
+        ["계약 유형", _format_contract_type(contract_type_val)],
         ["보증금", _format_number(deposit)],
         ["월세", _format_number(monthly_rent)],
-    ]
-    story.append(_create_info_table(money_data, font_name))
-    story.append(Spacer(1, 5*mm))
-
-    story.append(Paragraph("📅 계약 기간", styles["SectionTitle"]))
-    period_data = [
-        ["시작일", _format_date(start_date)],
-        ["종료일", _format_date(end_date)],
-    ]
-    story.append(_create_info_table(period_data, font_name))
-    story.append(Spacer(1, 5*mm))
-
-    story.append(Paragraph("📍 기타 정보", styles["SectionTitle"]))
-    other_data = [
-        ["계약 유형", _format_contract_type(contract_type_val)],
+        ["계약 기간", f"{_format_date(start_date)} ~ {_format_date(end_date)}"],
         ["소재지", address_value if address_value else "미기재"],
         ["확정일자", conf_value if conf_value else "미기재"],
     ]
-    story.append(_create_info_table(other_data, font_name))
+    
+    story.append(_create_info_table(info_data, font_name))
     story.append(Spacer(1, 8*mm))
 
     # ==================================================================================
-    # 상세 분석 (필요시)
+    # 나머지 이슈 (상세 분석)
     # ==================================================================================
     if len(issues) > 3:
         story.append(PageBreak())
-        story.append(Paragraph("📄 상세 분석", styles["SectionTitle"]))
+        story.append(Paragraph("📄 추가 발견사항 (전체)", styles["SectionTitle"]))
         story.append(Spacer(1, 3*mm))
         
         for idx, issue in enumerate(issues[3:], 4):
@@ -492,12 +477,28 @@ def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
             reasons = issue.get("reasons") or []
             
             story.append(Paragraph(f"{idx}. {message}", styles["BodyBold"]))
-            story.append(Paragraph(f"중요도: {severity}", styles["Small"]))
             
+            # 등급 표시
+            level_map = {"critical": "위험", "warning": "주의", "safe": "양호"}
+            level_str = level_map.get(issue.get('level'), issue.get('level', ''))
+            info_line = f"중요도: {severity}" + (f" | 등급: {level_str}" if level_str else "")
+            story.append(Paragraph(info_line, styles["Small"]))
+            
+            # 상세 내용
             if reasons:
-                for reason in reasons[:2]:  # 최대 2개만
+                for reason in reasons:
                     story.append(Paragraph(f"  • {reason}", styles["Body"]))
             
+            # 가이드 내용 간략 표시
+            guide = issue.get("guide")
+            if guide:
+                if guide.get("caution"):
+                    story.append(Paragraph(f"  ⚠️ {guide['caution']}", styles["Small"]))
+                if guide.get("action"):
+                    # 첫 번째 대처법만 간략히
+                    action1 = guide["action"][0] if isinstance(guide["action"], list) and guide["action"] else str(guide["action"])
+                    story.append(Paragraph(f"  💡 {action1}", styles["Small"]))
+
             story.append(Spacer(1, 4*mm))
 
     # ==================================================================================
@@ -505,7 +506,7 @@ def generate_pdf_bytes(context: Dict[str, Any]) -> bytes:
     # ==================================================================================
     story.append(Spacer(1, 10*mm))
     story.append(Paragraph(
-        "이 리포트는 AI 기반으로 자동 생성되었으며, 참고용으로만 사용하시기 바랍니다.",
+        "본 리포트는 AI 기술을 활용하여 생성된 참고 자료입니다. 법적 효력이 없으며, 정확한 판단을 위해서는 법률 전문가와 상담하시기 바랍니다.",
         styles["Small"]
     ))
 

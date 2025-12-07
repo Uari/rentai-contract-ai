@@ -94,12 +94,12 @@ with col_right:
         contract_label = format_contract_type(contract_value)
 
         st.markdown(f"""
-<div class="risk-card" style="--risk-color:{risk_meta['color']};--risk-bg:{risk_meta['bg']}">
-  <div class="risk-title">{risk_meta['icon']} {risk_meta['label']}</div>
-  <div class="risk-desc">{risk_meta['desc']}</div>
-  <div class="risk-meta">감지된 이슈 {issue_count}건 · 총 점수 {risk_info.get("total_score", 0)}</div>
-</div>
-""", unsafe_allow_html=True)
+            <div class="risk-card" style="--risk-color:{risk_meta['color']};--risk-bg:{risk_meta['bg']}">
+            <div class="risk-title">{risk_meta['icon']} {risk_meta['label']}</div>
+            <div class="risk-desc">{risk_meta['desc']}</div>
+            <div class="risk-meta">감지된 이슈 {issue_count}건 · 총 점수 {risk_info.get("total_score", 0)}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
         s = data.get("summary", {})
         summary_items = [

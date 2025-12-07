@@ -90,7 +90,11 @@ def health() -> Dict[str, Any]:
 # ✅ 분석 API (텍스트 + 필드 + 룰 평가)
 # ============================================================
 @app.post("/analyze/pdf")
-async def analyze_pdf(file: UploadFile = File(...), use_ocr: bool = Query(False, description="OCR 사용 강제 (스캔본인 경우)")) -> Dict[str, Any]:
+async def analyze_pdf(
+    file: UploadFile = File(...), 
+    use_ocr: bool = Query(False, description="OCR 사용 강제 (스캔본인 경우)"),
+    k: int = Query(3, description="RAG 검색 개수 (Top-k)")
+) -> Dict[str, Any]:
     """
     임대차 계약서 분석 API (PDF, 이미지 지원)
     
@@ -199,13 +203,18 @@ async def analyze_pdf(file: UploadFile = File(...), use_ocr: bool = Query(False,
     extras = {"signature_detected": signature, "tables_found": len(tables)}
     risk = evaluate_rules(extracted, text_full, extras, RULES_PATH)
 
-    # 룰 엔진 결과에 법령 근거 인용 붙이기
+    # 룰 엔진 결과에 법령 근거 인용 붙이기 + LLM 가이드 생성
+    from app.services.llm.issue_advisor import generate_issue_guide_async
+    
     issues = risk.get("issues", [])
     all_rag_refs = []  # 모든 RAG 참조 수집
+    
+    # 비동기 처리를 위해 이슈 처리 로직 개선
+    processed_issues = []
+    
     for issue in issues:
-        # 기본 질의: 룰 메시지 + 맥락 키워드
+        # 1. RAG 검색 (기존 로직)
         base_q = issue.get("message", "") or issue.get("title", "")
-        # 필요 시 필드보강 (extracted 필드 일부를 질의에 추가)
         hint = ""
         conf_date_val = extracted.get("confirmation_date", {}).get("value")
         if conf_date_val:
@@ -215,9 +224,30 @@ async def analyze_pdf(file: UploadFile = File(...), use_ocr: bool = Query(False,
             hint += f" 전입신고:{rr_val}"
 
         query = f"{base_q} {hint} 임대차보호법 근거"
-        refs = law_search(query, k=3)  # [{"text","source","score"}…]
+        refs = law_search(query, k=k)
         issue["references"] = refs
         all_rag_refs.extend(refs)
+        
+        # 2. LLM 가이드 생성 (비동기 호출)
+        # 상세 설명을 위한 텍스트 조합
+        reasons = issue.get("reasons", [])
+        description = ", ".join(reasons) if reasons else base_q
+        
+        guide_data = None
+        try:
+            # 룰 코드가 있거나 타이틀이 명확한 경우만 호출 (불필요한 호출 방지)
+            if base_q and len(base_q) > 2:
+                guide_data = await generate_issue_guide_async(base_q, description)
+        except Exception as e:
+            print(f"LLM Guide Error: {e}")
+            
+        if guide_data:
+            # LLM이 생성한 가이드 정보를 이슈 객체에 추가 (프론트엔드에서 사용)
+            issue["guide"] = guide_data
+            
+        processed_issues.append(issue)
+
+    risk["issues"] = processed_issues
 
     # 프론트엔드 기대 형식으로 변환
     # 1. summary 생성
@@ -396,6 +426,49 @@ async def report_pdf(file: UploadFile = File(...), use_ocr: bool = Query(False, 
 
     extras = {"signature_detected": signature, "tables_found": len(tables)}
     risk = evaluate_rules(extracted, text_full, extras, RULES_PATH)
+
+    # 룰 엔진 결과에 법령 근거 인용 붙이기 + LLM 가이드 생성
+    from app.services.llm.issue_advisor import generate_issue_guide_async
+    
+    issues = risk.get("issues", [])
+    all_rag_refs = []  # 모든 RAG 참조 수집
+    
+    # 비동기 처리를 위해 이슈 처리 로직 개선
+    processed_issues = []
+    
+    for issue in issues:
+        # 1. RAG 검색 (기존 로직)
+        base_q = issue.get("message", "") or issue.get("title", "")
+        hint = ""
+        conf_date_val = extracted.get("confirmation_date", {}).get("value")
+        if conf_date_val:
+            hint += f" 확정일자:{conf_date_val}"
+        
+        query = f"{base_q} {hint} 임대차보호법 근거"
+        refs = law_search(query, k=3)
+        issue["references"] = refs
+        all_rag_refs.extend(refs)
+        
+        # 2. LLM 가이드 생성 (비동기 호출)
+        # 상세 설명을 위한 텍스트 조합
+        reasons = issue.get("reasons", [])
+        description = ", ".join(reasons) if reasons else base_q
+        
+        guide_data = None
+        try:
+            # 룰 코드가 있거나 타이틀이 명확한 경우만 호출 (불필요한 호출 방지)
+            if base_q and len(base_q) > 2:
+                guide_data = await generate_issue_guide_async(base_q, description)
+        except Exception as e:
+            print(f"LLM Guide Error: {e}")
+            
+        if guide_data:
+            # LLM이 생성한 가이드 정보를 이슈 객체에 추가 (프론트엔드에서 사용)
+            issue["guide"] = guide_data
+            
+        processed_issues.append(issue)
+
+    risk["issues"] = processed_issues
 
     context = {
         "file": file.filename,

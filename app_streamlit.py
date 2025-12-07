@@ -49,6 +49,53 @@ RISK_UI = {
     "safe": {"label": "양호", "icon": "✅", "color": "#16a34a", "bg": "#ecfccb", "desc": "특별한 위험이 발견되지 않았습니다."},
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 이슈별 상세 가이드 (하드코딩 데이터)
+# ─────────────────────────────────────────────────────────────────────────────
+ISSUE_GUIDES = {
+    "관리비": {
+        "caution": "관리비 금액이 비어있거나 '규정에 따름' 등으로 모호하게 적혀있으면, 입주 후 예상치 못한 과도한 관리비를 청구받을 수 있습니다 (제2의 월세).",
+        "action": [
+            "계약서 특약사항에 <b>'월 관리비 O만원 (포함내역: 수도, 인터넷, TV 등)'</b>과 같이 구체적인 금액과 세부 포함 항목을 기재해달라고 요청하세요.",
+            "관리비 부과 기준(정액제인지, 실비 정산인지)을 명확히 물어보고 기재하세요.",
+        ],
+        "law": "<b>주택임대차보호법 및 표준계약서 규정</b><br>관리비도 임대차 계약의 중요한 조건이므로, 계약 체결 시 구체적으로 합의하여 기재하는 것이 원칙입니다."
+    },
+    "수선": {
+        "caution": "수선/유지보수 책임 범위가 불분명하면 보일러 고장, 누수 등 큰 비용이 드는 수리비를 세입자가 떠안을 위험이 있습니다.",
+        "action": [
+            "<b>'난방, 상하수도 등 주요 설비의 노후로 인한 고장은 임대인이 수리한다'</b>는 문구를 특약에 넣으세요.",
+            "입주 전 파손된 부위가 있다면 사진/동영상을 찍어두고, 임대인에게 미리 알리세요."
+        ],
+        "law": "<b>민법 제623조(임대인의 의무)</b><br>임대인은 목적물을 임차인에게 인도하고 계약존속중 그 사용, 수익에 필요한 상태를 유지하게 할 의무를 부담합니다."
+    },
+    "해지": {
+        "caution": "중도 해지 시 위약금이나 중개수수료 부담에 대한 조항이 없으면, 불가피하게 이사 가야 할 때 보증금 반환이 지연되거나 분쟁이 생길 수 있습니다.",
+        "action": [
+            "계약 기간 중 중도 퇴실 시 <b>'새 세입자를 구하는 중개수수료는 임차인이 부담한다'</b> 등 조건을 명확히 협의하세요.",
+            "묵시적 갱신 상태라면 해지 통보 후 3개월 뒤 효력이 발생함을 기억하세요."
+        ],
+        "law": "<b>주택임대차보호법 제6조의2</b><br>묵시적 갱신된 경우 임차인은 언제든지 해지 통지를 할 수 있으며, 통지 후 3개월이 지나면 효력이 발생합니다."
+    },
+    "근저당": {
+        "caution": "선순위 근저당(융자)이 많은 집은 경매 시 보증금을 전액 돌려받지 못할 위험이 매우 큽니다.",
+        "action": [
+            "등기부등본상 <b>근저당 채권최고액 + 내 보증금</b>이 집 시세의 70~80%를 넘는지 확인하세요.",
+            "잔금 지급일 전까지 '추가 대출을 받지 않는다'는 특약을 넣으세요."
+        ],
+        "law": "<b>주택임대차보호법 제3조의2</b><br>확정일자를 갖추면 경매 시 후순위 권리자보다 우선하여 보증금을 변제받을 수 있으나, 선순위 근저당보다는 후순위입니다."
+    }
+}
+
+def get_issue_guide(text):
+    """텍스트(제목+내용)에서 키워드를 찾아 가이드를 반환합니다."""
+    if not text:
+        return None
+    for key, guide in ISSUE_GUIDES.items():
+        if key in text:
+            return guide
+    return None
+
 CONTRACT_LABEL = {"jeonse": "전세", "wolse": "월세"}
 SEVERITY_LABEL = {"HIGH": "높음", "MED": "보통", "LOW": "낮음"}
 
@@ -233,18 +280,50 @@ with col_right:
                     "safe": "chip-safe",
                 }.get(level, "chip-warning")
 
+                # 가이드 검색 (1. 백엔드에서 온 LLM 가이드 우선, 2. 없으면 프론트엔드 하드코딩 가이드 사용)
+                guide = issue.get("guide")
+                if not guide:
+                    # 기존 하드코딩 fallback
+                    full_text = title + " " + "".join(reasons)
+                    guide = get_issue_guide(full_text)
+
                 reason_html = ""
                 if reasons:
                     reason_items = "".join(f"<li>{r}</li>" for r in reasons)
                     reason_html = f"""
 <div class="detail-issue-body">
-  <div class="small-muted">주요 근거</div>
+  <div class="small-muted">감지된 문제</div>
   <ul class="issue-list">{reason_items}</ul>
 </div>
 """
+                
+                # 가이드가 있으면 가이드 HTML 생성
+                guide_html = ""
+                if guide:
+                    action_items = "".join(f"<li>{a}</li>" for a in guide['action'])
+                    guide_html = f"""
+<div style="margin-top:12px; padding-top:12px; border-top:1px dashed #e5e7eb;">
+    <div style="margin-bottom:10px;">
+        <strong style="color:#b45309; font-size:13px;">⚠️ 주의사항</strong>
+        <div style="font-size:13px; color:#374151; margin-top:4px; line-height:1.5;">{guide['caution']}</div>
+    </div>
+    <div style="margin-bottom:8px;">
+        <strong style="color:#047857; font-size:13px;">💡 대처 방법</strong>
+        <ul class="issue-list" style="margin-top:4px;">{action_items}</ul>
+    </div>
+</div>
+"""
 
+                # 법적 근거 처리 (가이드에 법적 근거가 있으면 그것을 우선 사용)
                 ref_html = ""
-                if refs:
+                if guide and guide.get("law"):
+                     ref_html = f"""
+<div class="detail-issue-body" style="margin-top:12px; background:#f9fafb; padding:10px; border-radius:8px;">
+  <div class="small-muted" style="margin-bottom:4px;">관련 법적 근거</div>
+  <div style="font-size:12px; color:#4b5563; line-height:1.5;">{guide['law']}</div>
+</div>
+"""
+                elif refs:
                     ref_items = "".join(
                         f"<li><strong>{ref.get('source','근거')}</strong> - {ref.get('text','')}</li>"
                         for ref in refs
@@ -267,7 +346,8 @@ with col_right:
     <span>중요도 {severity}</span>
     <span>룰 코드 {issue.get('code','-')}</span>
   </div>
-  {reason_html or "<div class='detail-issue-body small-muted'>추가 설명이 없습니다.</div>"}
+  {reason_html}
+  {guide_html}
   {ref_html}
 </div>
 """,
