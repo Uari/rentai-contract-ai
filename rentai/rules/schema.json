@@ -1,0 +1,40 @@
+{
+  "title": "LeaseDoc",
+  "type": "object",
+  "properties": {
+    "lessor": {
+      "type": "string"
+    },
+    "lessee": {
+      "type": "string"
+    },
+    "address": {
+      "type": "string"
+    },
+    "deposit": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "monthly_rent": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "period_months": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "special_terms": {
+      "type": "string"
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "address",
+    "period_months"
+  ]
+}

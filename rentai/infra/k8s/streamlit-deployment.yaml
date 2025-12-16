@@ -1,0 +1,28 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rentai-frontend }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: rentai-frontend } }
+  template:
+    metadata: { labels: { app: rentai-frontend } }
+    spec:
+      containers:
+        - name: frontend
+          image: rentai-frontend:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8501
+          env:
+            - name: BACKEND_URL
+              value: "http://rentai-backend:8000/api"
+---
+apiVersion: v1
+kind: Service
+metadata: { name: rentai-frontend }
+spec:
+  selector: { app: rentai-frontend }
+  ports:
+    - port: 8501
+      targetPort: 8501
