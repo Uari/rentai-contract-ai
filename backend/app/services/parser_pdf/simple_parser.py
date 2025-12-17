@@ -1,3 +1,5 @@
+# ⚠️ 레거시 파서 - analyze_pipeline.py에서만 사용 (현재 미사용)
+# 메인 파서는 enhanced_parser.py 사용
 
 import fitz  # PyMuPDF
 from typing import Dict, List

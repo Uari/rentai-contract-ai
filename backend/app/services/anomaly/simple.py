@@ -1,3 +1,4 @@
+# ⚠️ 레거시 이상 탐지 - analyze_pipeline.py에서만 사용 (현재 미사용)
 
 from app.models.contract_schema import LeaseDoc
 

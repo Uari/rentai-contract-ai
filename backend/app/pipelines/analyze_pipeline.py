@@ -1,9 +1,11 @@
+# ⚠️ 레거시 파이프라인 - 현재 사용 안 함 (fastapi_app.py에서 직접 처리)
+# TODO: app/api/analyze.py 완성 시 사용 또는 삭제
 
 from typing import Dict, Any
 from app.services.parser_pdf.simple_parser import pdf_bytes_to_pages_text, naive_extract_fields
 from app.models.contract_schema import LeaseDoc
-from app.services.rule_engine.loader import load_rules
-from app.services.rule_engine.checker import run_rules
+from app.services.rules.loader import load_rules
+from app.services.rules.checker import run_rules
 from app.services.anomaly.simple import anomaly_score
 from app.services.report.summary import make_summary
 
